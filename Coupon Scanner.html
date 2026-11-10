@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Coupon Scanner</title>
+<style>
+:root{--bg:#fff;--fg:#000;--mut:#666;--line:#000;--ok:#0a7a2f;--bad:#c4161c;--warn:#444;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#000;--fg:#fff;--mut:#999;--line:#fff;--ok:#2ecc71;--bad:#ff5a5f;--warn:#bbb}}
+:root[data-theme="dark"]{--bg:#000;--fg:#fff;--mut:#999;--line:#fff;--ok:#2ecc71;--bad:#ff5a5f;--warn:#bbb}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:Helvetica,Arial,sans-serif}
+main{max-width:520px;margin:0 auto;padding:16px}
+h1{font-size:13px;letter-spacing:.3em;margin:0 0 14px;text-transform:uppercase}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);border:2px solid var(--line);margin-bottom:12px}
+.stats div{padding:10px 6px;text-align:center;border-right:1px solid var(--line)}
+.stats div:last-child{border:0}
+.stats b{display:block;font-size:26px}
+.stats span{font-size:10px;letter-spacing:.2em;color:var(--mut)}
+#result{border:2px solid var(--line);padding:22px 12px;text-align:center;margin-bottom:12px;min-height:128px;display:flex;flex-direction:column;justify-content:center}
+#result .big{font-size:34px;font-weight:700;letter-spacing:.08em}
+#result .sub{font-size:13px;margin-top:6px;font-family:Courier,monospace;word-break:break-all}
+#result[data-s=ok]{background:var(--ok);color:#fff;border-color:var(--ok)}
+#result[data-s=bad]{background:var(--bad);color:#fff;border-color:var(--bad)}
+#result[data-s=warn]{background:var(--warn);color:var(--bg)}
+#result[data-s=idle] .big{color:var(--mut);font-size:22px}
+#reader{border:2px solid var(--line);min-height:0;margin-bottom:10px;background:#000;overflow:hidden}
+#reader:empty{display:none}
+.row{display:flex;gap:8px;margin-bottom:8px}
+button,label.btn,input[type=text]{font:inherit;font-size:13px;letter-spacing:.12em;text-transform:uppercase;padding:13px 10px;border:2px solid var(--line);background:var(--bg);color:var(--fg);border-radius:0;cursor:pointer;flex:1;text-align:center}
+input[type=text]{text-transform:none;letter-spacing:.05em;font-family:Courier,monospace;cursor:text;flex:2;min-width:0}
+button.pri{background:var(--fg);color:var(--bg)}
+input[type=file]{display:none}
+h2{font-size:11px;letter-spacing:.25em;margin:20px 0 8px;text-transform:uppercase;color:var(--mut)}
+#log{border-top:1px solid var(--line);font-size:12px}
+#log div{display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);font-family:Courier,monospace}
+#log b{font-family:Helvetica,Arial,sans-serif;font-size:10px;letter-spacing:.15em}
+textarea{width:100%;height:140px;border:2px solid var(--line);background:var(--bg);color:var(--fg);font-family:Courier,monospace;font-size:12px;padding:8px;margin-top:8px}
+.note{font-size:12px;color:var(--mut);line-height:1.5;margin-top:6px}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+<h1>Coupon Scanner</h1>
+
+<div class="stats">
+  <div><b id="sTotal">0</b><span>CODES</span></div>
+  <div><b id="sUsed">0</b><span>USED</span></div>
+  <div><b id="sLeft">0</b><span>LEFT</span></div>
+</div>
+
+<div id="result" data-s="idle"><div class="big">READY</div><div class="sub" id="rsub">Upload codes, then scan</div></div>
+
+<div id="reader"></div>
+<div class="row"><button class="pri" id="camBtn">Start camera</button></div>
+
+<div class="row">
+  <input type="text" id="manual" placeholder="Type code e.g. FC-ABC123" autocapitalize="characters" autocomplete="off">
+  <button id="chk" style="flex:1">Check</button>
+</div>
+
+<div class="row">
+  <label class="btn">Upload codes<input type="file" id="fCodes" accept=".csv,.txt,text/csv,text/plain"></label>
+  <label class="btn">Scan image<input type="file" id="fImg" accept="image/*"></label>
+</div>
+<p class="note" id="camNote">If the camera is blocked here, open this page directly in your phone's browser, or use “Scan image” / type the code.</p>
+
+<h2>Recent scans</h2>
+<div id="log"></div>
+
+<h2>Data</h2>
+<div class="row">
+  <button id="expBtn">Show used list</button>
+  <button id="rstBtn">Reset used</button>
+</div>
+<textarea id="exp" hidden readonly></textarea>
+<p class="note">Everything is stored on this device only. Use one phone for the entrance, or upload the same codes on each phone.</p>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let state = {codes: [], used: {}, log: []};
+let codeSet = new Set(), scanner = null, running = false, last = {c: '', t: 0};
+
+function load(){ try{ const s = localStorage.getItem('fc_state'); if(s) state = Object.assign(state, JSON.parse(s)); }catch(e){} codeSet = new Set(state.codes); }
+function save(){ try{ localStorage.setItem('fc_state', JSON.stringify(state)); }catch(e){} }
+const norm = s => String(s || '').trim().toUpperCase().replace(/\s+/g, '');
+const fmt = iso => new Date(iso).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+
+function show(s, big, sub){ const r = $('result'); r.dataset.s = s; r.querySelector('.big').textContent = big; $('rsub').textContent = sub || ''; }
+function beep(ok){ try{ if(navigator.vibrate) navigator.vibrate(ok ? 80 : [120, 60, 120]);
+  const a = new (window.AudioContext || window.webkitAudioContext)(), o = a.createOscillator(), g = a.createGain();
+  o.frequency.value = ok ? 880 : 220; g.gain.value = .15; o.connect(g); g.connect(a.destination); o.start(); o.stop(a.currentTime + (ok ? .12 : .35)); }catch(e){} }
+
+function render(){
+  const used = Object.keys(state.used).length;
+  $('sTotal').textContent = state.codes.length; $('sUsed').textContent = used; $('sLeft').textContent = Math.max(0, state.codes.length - used);
+  $('log').innerHTML = state.log.slice(0, 12).map(l => `<div><span>${l.c}</span><b>${l.r} · ${fmt(l.t)}</b></div>`).join('') || '<div><span>No scans yet</span></div>';
+}
+
+function check(raw){
+  const c = norm(raw); if(!c) return;
+  const now = Date.now(); if(c === last.c && now - last.t < 3000) return; last = {c, t: now};
+  if(!state.codes.length){ show('warn', 'NO CODES', 'Upload the codes file first'); beep(false); return; }
+  const iso = new Date().toISOString(); let r;
+  if(!codeSet.has(c)){ r = 'INVALID'; show('bad', 'INVALID', c); beep(false); }
+  else if(state.used[c]){ r = 'USED'; show('bad', 'ALREADY USED', c + ' · at ' + fmt(state.used[c])); beep(false); }
+  else { state.used[c] = iso; r = 'VALID'; show('ok', 'VALID', c); beep(true); }
+  state.log.unshift({c, r, t: iso}); state.log = state.log.slice(0, 200); save(); render();
+}
+
+async function toggleCam(){
+  if(running){ try{ await scanner.stop(); scanner.clear(); }catch(e){} running = false; $('camBtn').textContent = 'Start camera'; return; }
+  try{
+    scanner = new Html5Qrcode('reader', {formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE, Html5QrcodeSupportedFormats.CODE_128], verbose: false});
+    await scanner.start({facingMode: 'environment'}, {fps: 10, qrbox: (w, h) => { const s = Math.floor(Math.min(w, h) * .7); return {width: s, height: s}; }}, t => check(t), () => {});
+    running = true; $('camBtn').textContent = 'Stop camera';
+  }catch(e){ show('warn', 'CAMERA BLOCKED', 'Allow camera access, or open in your browser'); }
+}
+
+$('camBtn').onclick = toggleCam;
+$('chk').onclick = () => { last = {c: '', t: 0}; check($('manual').value); $('manual').value = ''; };
+$('manual').addEventListener('keydown', e => { if(e.key === 'Enter') $('chk').click(); });
+
+$('fCodes').onchange = async e => {
+  const f = e.target.files[0]; if(!f) return;
+  const txt = await f.text();
+  const list = [...new Set(txt.split(/[\r\n,;\t]+/).map(norm).filter(x => /^[A-Z0-9-]{4,}$/.test(x) && x !== 'CODE'))];
+  if(!list.length){ show('warn', 'NO CODES FOUND', 'Check the file'); return; }
+  state.codes = list; codeSet = new Set(list);
+  Object.keys(state.used).forEach(k => { if(!codeSet.has(k)) delete state.used[k]; });
+  save(); render(); show('idle', list.length + ' CODES', 'Loaded. Ready to scan'); e.target.value = '';
+};
+
+$('fImg').onchange = async e => {
+  const f = e.target.files[0]; if(!f) return;
+  try{
+    if(running) await toggleCam();
+    const s = new Html5Qrcode('reader', {formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE, Html5QrcodeSupportedFormats.CODE_128], verbose: false});
+    const t = await s.scanFile(f, false); s.clear(); last = {c: '', t: 0}; check(t);
+  }catch(err){ show('warn', 'NO CODE FOUND', 'Try a clearer image'); }
+  e.target.value = '';
+};
+
+$('expBtn').onclick = () => {
+  const t = $('exp'); t.hidden = !t.hidden; if(t.hidden){ $('expBtn').textContent = 'Show used list'; return; }
+  t.value = 'code,redeemed_at\n' + Object.entries(state.used).map(([c, v]) => c + ',' + v).join('\n');
+  $('expBtn').textContent = 'Hide used list'; t.select();
+};
+$('rstBtn').onclick = () => {
+  if(!confirm('Clear all “used” marks? Codes stay loaded.')) return;
+  state.used = {}; state.log = []; save(); render(); show('idle', 'RESET', 'All coupons unused');
+};
+
+load(); render();
+if(state.codes.length) show('idle', 'READY', state.codes.length + ' codes loaded');
+</script>
+</body>
+</html>
